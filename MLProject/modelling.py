@@ -1,15 +1,14 @@
 """
 modelling.py
 
-Training dengan hyperparameter tuning dan manual MLflow logging.
-Versi ini sudah disesuaikan agar aman dijalankan melalui MLflow Project
-di GitHub Actions.
+Training model untuk Workflow-CI menggunakan MLflow Project.
+Versi ini sudah diperbaiki agar aman dijalankan melalui GitHub Actions.
 
-Contoh local:
-python modelling.py --data_dir namadataset_preprocessing --target_col target
-
-Contoh via MLflow Project:
+Cara jalan di GitHub Actions:
 mlflow run MLProject --env-manager=local -P data_dir=namadataset_preprocessing -P target_col=target
+
+Cara jalan lokal langsung:
+python modelling.py --data_dir namadataset_preprocessing --target_col target
 """
 
 from __future__ import annotations
@@ -43,6 +42,7 @@ def load_train_test(data_dir: str | Path, target_col: str):
 
     train_path = data_dir / "train.csv"
     test_path = data_dir / "test.csv"
+    metadata_path = data_dir / "metadata.json"
 
     if not train_path.exists():
         raise FileNotFoundError(f"File train.csv tidak ditemukan di: {train_path}")
@@ -53,7 +53,6 @@ def load_train_test(data_dir: str | Path, target_col: str):
     train_df = pd.read_csv(train_path)
     test_df = pd.read_csv(test_path)
 
-    metadata_path = data_dir / "metadata.json"
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         target_col = metadata.get("target_col", metadata.get("target_column", target_col))
@@ -111,65 +110,82 @@ def save_artifacts(model, X_test, y_test, y_pred, artifact_dir: Path):
     report_path.write_text(report, encoding="utf-8")
 
     if hasattr(model, "feature_importances_"):
-        fi = pd.DataFrame(
+        feature_importance = pd.DataFrame(
             {
                 "feature": X_test.columns,
                 "importance": model.feature_importances_,
             }
         ).sort_values("importance", ascending=False)
 
-        fi.to_csv(artifact_dir / "feature_importance.csv", index=False)
+        feature_importance.to_csv(
+            artifact_dir / "feature_importance.csv",
+            index=False,
+        )
 
-    sample_pred = X_test.head(20).copy()
-    sample_pred["actual"] = list(y_test.head(20))
-    sample_pred["prediction"] = list(y_pred[:20])
-    sample_pred.to_csv(artifact_dir / "sample_predictions.csv", index=False)
+    sample_predictions = X_test.head(20).copy()
+    sample_predictions["actual"] = list(y_test.head(20))
+    sample_predictions["prediction"] = list(y_pred[:20])
+    sample_predictions.to_csv(
+        artifact_dir / "sample_predictions.csv",
+        index=False,
+    )
 
     return artifact_dir
 
 
 def setup_mlflow(experiment_name: str):
     """
-    Jika dijalankan oleh MLflow Project di GitHub Actions,
-    jangan set tracking URI manual.
-
-    Jika dijalankan langsung secara lokal,
-    gunakan folder mlruns lokal.
+    Jika script dijalankan langsung, kita buat experiment lokal.
+    Jika script dijalankan melalui MLflow Project, jangan set tracking URI manual,
+    karena MLflow Project sudah membuat run dan tracking URI sendiri.
     """
-    is_mlflow_project_run = os.environ.get("MLFLOW_RUN_ID") is not None
+    is_running_inside_mlflow_project = os.environ.get("MLFLOW_RUN_ID") is not None
 
-    if not is_mlflow_project_run:
+    if not is_running_inside_mlflow_project:
         mlflow.set_tracking_uri("file:./mlruns")
         mlflow.set_experiment(experiment_name)
 
 
-def start_mlflow_run(run_name: str):
+def get_run_context(run_name: str):
     """
     Jika dijalankan melalui MLflow Project, gunakan run yang sudah dibuat
     oleh MLflow Project.
 
     Jika dijalankan langsung, buat run baru.
     """
-    existing_run_id = os.environ.get("MLFLOW_RUN_ID")
+    is_running_inside_mlflow_project = os.environ.get("MLFLOW_RUN_ID") is not None
 
-    if existing_run_id:
-        return mlflow.start_run(run_id=existing_run_id)
+    if is_running_inside_mlflow_project:
+        return mlflow.start_run()
 
     return mlflow.start_run(run_name=run_name)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", default="namadataset_preprocessing")
-    parser.add_argument("--target_col", default="target")
-    parser.add_argument("--experiment_name", default="MSML-Skilled-ManualLogging")
+    parser.add_argument(
+        "--data_dir",
+        default="namadataset_preprocessing",
+        help="Folder berisi train.csv dan test.csv",
+    )
+    parser.add_argument(
+        "--target_col",
+        default="target",
+        help="Nama kolom target",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        default="MSML-Workflow-CI",
+        help="Nama experiment MLflow saat dijalankan lokal",
+    )
+
     args = parser.parse_args()
 
     setup_mlflow(args.experiment_name)
 
     X_train, X_test, y_train, y_test, target_col = load_train_test(
-        args.data_dir,
-        args.target_col,
+        data_dir=args.data_dir,
+        target_col=args.target_col,
     )
 
     base_model = RandomForestClassifier(
@@ -177,11 +193,13 @@ def main():
         class_weight="balanced",
     )
 
+    # Grid dibuat tidak terlalu besar agar GitHub Actions cepat selesai,
+    # tetapi tetap valid sebagai hyperparameter tuning.
     param_grid = {
-        "n_estimators": [100, 200, 300],
-        "max_depth": [None, 5, 10, 20],
-        "min_samples_split": [2, 5, 10],
-        "min_samples_leaf": [1, 2, 4],
+        "n_estimators": [100, 200],
+        "max_depth": [None, 10, 20],
+        "min_samples_split": [2, 5],
+        "min_samples_leaf": [1, 2],
     }
 
     cv = StratifiedKFold(
@@ -199,7 +217,8 @@ def main():
         verbose=1,
     )
 
-    with start_mlflow_run("RandomForest-Tuning-ManualLogging"):
+    with get_run_context("RandomForest-Tuning-ManualLogging"):
+        print("Mulai training dan hyperparameter tuning...")
         search.fit(X_train, y_train)
 
         best_model = search.best_estimator_
@@ -239,28 +258,35 @@ def main():
             metrics["roc_auc"] = roc_auc
 
         mlflow.log_params(search.best_params_)
+
         mlflow.log_param("model_type", "RandomForestClassifier")
         mlflow.log_param("target_col", target_col)
-        mlflow.log_param("n_train", len(X_train))
-        mlflow.log_param("n_test", len(X_test))
+        mlflow.log_param("n_train", X_train.shape[0])
+        mlflow.log_param("n_test", X_test.shape[0])
         mlflow.log_param("n_features", X_train.shape[1])
+        mlflow.log_param("cv", 3)
+        mlflow.log_param("scoring", "f1_weighted")
 
         mlflow.log_metrics(metrics)
 
         artifact_dir = save_artifacts(
-            best_model,
-            X_test,
-            y_test,
-            y_pred,
-            Path("artifacts"),
+            model=best_model,
+            X_test=X_test,
+            y_test=y_test,
+            y_pred=y_pred,
+            artifact_dir=Path("artifacts"),
         )
 
         mlflow.log_artifacts(
-            str(artifact_dir),
+            local_dir=str(artifact_dir),
             artifact_path="evaluation_artifacts",
         )
 
-        signature = infer_signature(X_train, best_model.predict(X_train))
+        signature = infer_signature(
+            X_train,
+            best_model.predict(X_train),
+        )
+
         input_example = X_train.head(5)
 
         mlflow.sklearn.log_model(
@@ -270,13 +296,13 @@ def main():
             input_example=input_example,
         )
 
-        run = mlflow.active_run()
+        active_run = mlflow.active_run()
 
         print("Training tuning selesai.")
-        print("Run ID:", run.info.run_id)
+        print("Run ID:", active_run.info.run_id if active_run else "Tidak ada active run")
         print("Best params:", search.best_params_)
         print("Metrics:", metrics)
-        print("Artifact tersimpan di MLflow.")
+        print("Artifact evaluasi tersimpan.")
         print("Model tersimpan di artifact path: model")
 
 
