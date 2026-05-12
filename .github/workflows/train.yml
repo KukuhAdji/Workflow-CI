@@ -28,15 +28,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install mlflow pandas numpy scikit-learn matplotlib joblib
 
+      - name: Check repository structure
+        run: |
+          pwd
+          ls -la
+          echo "Isi folder MLProject:"
+          ls -la MLProject
+          echo "Isi folder dataset preprocessing:"
+          ls -la MLProject/namadataset_preprocessing
+
       - name: Run MLflow Project
         run: |
-          mlflow run MLProject -P data_dir=namadataset_preprocessing -P target_col=target
+          mlflow run MLProject --env-manager=local -P data_dir=namadataset_preprocessing -P target_col=target
 
       - name: Collect artifacts
         run: |
           mkdir -p training-artifacts
           cp -r mlruns training-artifacts/mlruns || true
-          find . -maxdepth 4 -type d -name artifacts -exec cp -r {} training-artifacts/ \; || true
+          find . -maxdepth 5 -type d -name artifacts -exec cp -r {} training-artifacts/ \; || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
