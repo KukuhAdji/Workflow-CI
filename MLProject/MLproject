@@ -1,0 +1,10 @@
+name: MSML_Workflow_CI
+
+conda_env: conda.yaml
+
+entry_points:
+  main:
+    parameters:
+      data_dir: {type: str, default: "namadataset_preprocessing"}
+      target_col: {type: str, default: "target"}
+    command: "python modelling.py --data_dir {data_dir} --target_col {target_col}"
